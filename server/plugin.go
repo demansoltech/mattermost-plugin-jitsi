@@ -35,6 +35,7 @@ type Plugin struct {
 
 	telemetryClient telemetry.Client
 	tracker         telemetry.Tracker
+	callback        CallbackValidation
 
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex

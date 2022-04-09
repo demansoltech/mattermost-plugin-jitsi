@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/mattermost/mattermost-server/v5/mlog"
@@ -36,6 +37,13 @@ type StartMeetingFromAction struct {
 	} `json:"context"`
 }
 
+type CallbackValidation struct {
+	UserID    string
+	ChannelID string
+	room      string
+	Jwt       string
+}
+
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	switch path := r.URL.Path; path {
 	case "/api/v1/meetings/enrich":
@@ -46,6 +54,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleConfig(w, r)
 	case "/jitsi_meet_external_api.js":
 		p.handleExternalAPIjs(w, r)
+	case "/auth-callback":
+		p.handleCallback(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -197,6 +207,12 @@ func (p *Plugin) handleStartMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	callbackValidation := CallbackValidation{
+		UserID:    userID,
+		ChannelID: channelID,
+	}
+	p.callback = callbackValidation
+
 	userConfig, err := p.getUserConfig(userID)
 	if err != nil {
 		mlog.Error("Error getting user config", mlog.Err(err))
@@ -302,4 +318,36 @@ func (p *Plugin) handleEnrichMeetingJwt(w http.ResponseWriter, r *http.Request) 
 	if err2 != nil {
 		mlog.Warn("Unable to write response body", mlog.String("handler", "handleEnrichMeetingJwt"), mlog.Err(err))
 	}
+}
+
+func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if err := p.getConfiguration().IsValid(); err != nil {
+		mlog.Error("Invalid plugin configuration", mlog.Err(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	room := r.Header.Get("room")
+
+	user, err := p.API.GetUser(p.callback.UserID)
+	if err != nil {
+		http.Error(w, err.Error(), err.StatusCode)
+	}
+
+	jwtToken, err2 := p.updateJwtUserInfo(p.callback.Jwt, user)
+	if err2 != nil {
+		mlog.Error("Error updating JWT context", mlog.Err(err2))
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	jitsiURL := strings.TrimSpace(p.getConfiguration().GetJitsiURL())
+	jitsiURL = strings.TrimRight(jitsiURL, "/")
+	redirectURL := jitsiURL + "/" + room + "?jwt="
+
+	// if valid
+	redirectURL = redirectURL + jwtToken
+
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+
 }
