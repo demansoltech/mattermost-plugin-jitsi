@@ -356,6 +356,13 @@ func (p *Plugin) startMeeting(user *model.User, channel *model.Channel, meetingI
 		}) + "\n\n" + meetingUntil,
 	}
 
+	callbackValidation := CallbackValidation{
+		UserID:    user.Id,
+		ChannelID: channel.Id,
+		room:      meetingID,
+	}
+	p.callback = callbackValidation
+
 	post := &model.Post{
 		UserId:    user.Id,
 		ChannelId: channel.Id,
