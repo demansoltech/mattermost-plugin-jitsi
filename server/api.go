@@ -335,7 +335,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	jitsiURL = strings.TrimRight(jitsiURL, "/")
 	redirectURL := jitsiURL + "/" + room + "?jwt="
 
-	checkCallback, err2 := checkValidationCallback(user, room)
+	checkCallback, err2 := p.checkValidationCallback(user, room)
 	if err2 != nil {
 		jwtToken, err1 := p.createJwtToken(user, "invalidroom")
 		if err1 != nil {
@@ -395,10 +395,13 @@ func (p *Plugin) createJwtToken(user *model.User, room string) (string, error) {
 	claims.Context = newContext
 
 	return signClaims(p.getConfiguration().JitsiAppSecret, &claims)
-
 }
 
-func checkValidationCallback(user *model.User, room string) (bool, error) {
-
+func (p *Plugin) checkValidationCallback(user *model.User, room string) (bool, error) {
+	if p.callback.room != room {
+		return false, nil
+	} else if p.callback.UserID != user.Id {
+		return false, nil
+	}
 	return true, nil
 }
