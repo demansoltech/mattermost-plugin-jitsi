@@ -323,45 +323,38 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	room := r.Header.Get("room")
+	redirectURL := p.handleRedirectURL(room)
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
 
-	user, err := p.API.GetUser(p.callback.UserID)
-	if err != nil {
-		http.Error(w, err.Error(), err.StatusCode)
-	}
-
+func (p *Plugin) handleRedirectURL(room string) string {
 	jitsiURL := strings.TrimSpace(p.getConfiguration().GetJitsiURL())
 	jitsiURL = strings.TrimRight(jitsiURL, "/")
 	redirectURL := jitsiURL + "/" + room + "?jwt="
 
-	checkCallback, err2 := p.checkValidationCallback(user, room)
-	if err2 != nil {
-		jwtToken, err1 := p.createJwtToken(user, "invalidroom")
-		if err1 != nil {
-			mlog.Error("Error Create JWT context", mlog.Err(err1))
-			http.Error(w, "Internal error", http.StatusInternalServerError)
-		}
-		redirectURL = redirectURL + jwtToken
-		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+	validJwtToken, err1 := p.createJwtToken(room)
+	if err1 != nil {
+		mlog.Error("Error Create JWT context", mlog.Err(err1))
+		return redirectURL + "invalidjwttoken"
 	}
-	if checkCallback {
-		jwtToken, err1 := p.createJwtToken(user, room)
-		if err1 != nil {
-			mlog.Error("Error Create JWT context", mlog.Err(err1))
-			http.Error(w, "Internal error", http.StatusInternalServerError)
-		}
-		redirectURL = redirectURL + jwtToken
-		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
-	} else {
-		redirectURL = *p.API.GetConfig().ServiceSettings.SiteURL
-		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+
+	if p.callback.room == room {
+		return redirectURL + validJwtToken
 	}
+	return *p.API.GetConfig().ServiceSettings.SiteURL
+
 }
 
-func (p *Plugin) createJwtToken(user *model.User, room string) (string, error) {
+func (p *Plugin) createJwtToken(room string) (string, error) {
 	// Error check is done in configuration.IsValid()
 	jURL, _ := url.Parse(p.getConfiguration().GetJitsiURL())
+
+	user, err := p.API.GetUser(p.callback.UserID)
+	if err != nil {
+		mlog.Error("Error Get User", mlog.Err(err))
+		return "", err
+	}
 
 	var meetingLinkValidUntil = time.Time{}
 	meetingLinkValidUntil = time.Now().Add(time.Duration(p.getConfiguration().JitsiLinkValidTime) * time.Minute)
@@ -395,13 +388,4 @@ func (p *Plugin) createJwtToken(user *model.User, room string) (string, error) {
 	claims.Context = newContext
 
 	return signClaims(p.getConfiguration().JitsiAppSecret, &claims)
-}
-
-func (p *Plugin) checkValidationCallback(user *model.User, room string) (bool, error) {
-	if p.callback.room != room {
-		return false, nil
-	} else if p.callback.UserID != user.Id {
-		return false, nil
-	}
-	return true, nil
 }
