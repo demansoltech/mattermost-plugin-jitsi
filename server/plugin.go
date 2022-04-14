@@ -35,6 +35,7 @@ type Plugin struct {
 
 	telemetryClient telemetry.Client
 	tracker         telemetry.Tracker
+	callback        CallbackValidation
 
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
@@ -354,6 +355,13 @@ func (p *Plugin) startMeeting(user *model.User, channel *model.Channel, meetingI
 			},
 		}) + "\n\n" + meetingUntil,
 	}
+
+	callbackValidation := CallbackValidation{
+		UserID:    user.Id,
+		ChannelID: channel.Id,
+		room:      meetingID,
+	}
+	p.callback = callbackValidation
 
 	post := &model.Post{
 		UserId:    user.Id,

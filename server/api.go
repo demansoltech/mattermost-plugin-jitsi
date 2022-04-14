@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/cristalhq/jwt/v2"
 	"github.com/mattermost/mattermost-server/v5/mlog"
 	"github.com/mattermost/mattermost-server/v5/model"
 	"github.com/mattermost/mattermost-server/v5/plugin"
@@ -36,6 +41,12 @@ type StartMeetingFromAction struct {
 	} `json:"context"`
 }
 
+type CallbackValidation struct {
+	UserID    string
+	ChannelID string
+	room      string
+}
+
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	switch path := r.URL.Path; path {
 	case "/api/v1/meetings/enrich":
@@ -46,6 +57,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleConfig(w, r)
 	case "/jitsi_meet_external_api.js":
 		p.handleExternalAPIjs(w, r)
+	case "/auth-callback":
+		p.handleCallback(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -302,4 +315,77 @@ func (p *Plugin) handleEnrichMeetingJwt(w http.ResponseWriter, r *http.Request) 
 	if err2 != nil {
 		mlog.Warn("Unable to write response body", mlog.String("handler", "handleEnrichMeetingJwt"), mlog.Err(err))
 	}
+}
+
+func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if err := p.getConfiguration().IsValid(); err != nil {
+		mlog.Error("Invalid plugin configuration", mlog.Err(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	room := r.Header.Get("room")
+	redirectURL := p.handleRedirectURL(room)
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+func (p *Plugin) handleRedirectURL(room string) string {
+	jitsiURL := strings.TrimSpace(p.getConfiguration().GetJitsiURL())
+	jitsiURL = strings.TrimRight(jitsiURL, "/")
+	redirectURL := jitsiURL + "/" + room + "?jwt="
+
+	validJwtToken, err1 := p.createJwtToken(room)
+	if err1 != nil {
+		mlog.Error("Error Create JWT context", mlog.Err(err1))
+		return redirectURL + "invalidjwttoken"
+	}
+
+	if p.callback.room == room {
+		return redirectURL + validJwtToken
+	}
+	return *p.API.GetConfig().ServiceSettings.SiteURL
+
+}
+
+func (p *Plugin) createJwtToken(room string) (string, error) {
+	// Error check is done in configuration.IsValid()
+	jURL, _ := url.Parse(p.getConfiguration().GetJitsiURL())
+
+	user, err := p.API.GetUser(p.callback.UserID)
+	if err != nil {
+		mlog.Error("Error Get User", mlog.Err(err))
+		return "", err
+	}
+
+	var meetingLinkValidUntil = time.Time{}
+	meetingLinkValidUntil = time.Now().Add(time.Duration(p.getConfiguration().JitsiLinkValidTime) * time.Minute)
+
+	claims := Claims{}
+	claims.Issuer = p.getConfiguration().JitsiAppID
+	claims.Audience = []string{p.getConfiguration().JitsiAppID}
+	claims.ExpiresAt = jwt.NewNumericDate(meetingLinkValidUntil)
+	claims.Subject = jURL.Hostname()
+	claims.Room = room
+
+	sanitizedUser := user.DeepCopy()
+	config := p.API.GetConfig()
+	if config.PrivacySettings.ShowFullName == nil || !*config.PrivacySettings.ShowFullName {
+		sanitizedUser.FirstName = ""
+		sanitizedUser.LastName = ""
+	}
+	if config.PrivacySettings.ShowEmailAddress == nil || !*config.PrivacySettings.ShowEmailAddress {
+		sanitizedUser.Email = ""
+	}
+
+	newContext := Context{
+		User: User{
+			Avatar: fmt.Sprintf("%s/api/v4/users/%s/image?_=%d", *config.ServiceSettings.SiteURL, sanitizedUser.Id, sanitizedUser.LastPictureUpdate),
+			Name:   sanitizedUser.GetDisplayName(model.SHOW_NICKNAME_FULLNAME),
+			Email:  sanitizedUser.Email,
+			ID:     sanitizedUser.Id,
+		},
+		Group: claims.Context.Group,
+	}
+	claims.Context = newContext
+
+	return signClaims(p.getConfiguration().JitsiAppSecret, &claims)
 }
